@@ -1,0 +1,17 @@
+# render.yaml — Render Blueprint for one-click deploy
+services:
+  - type: web
+    name: ai-hot-comments
+    env: docker
+    plan: free
+    region: frankfurt        # 可改 singapore / oregon 等
+    dockerfilePath: ./Dockerfile
+    autoDeploy: true
+    healthCheckPath: /healthz
+    envVars:
+      - key: OPENAI_API_KEY
+        sync: false          # 首次在 Render 控制台填写
+      - key: OPENAI_MODEL
+        value: gpt-4o-mini
+      - key: PORT
+        value: 8080
