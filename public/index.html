@@ -67,6 +67,7 @@
     </section>
 
     <section class="grid">
+      <!-- 生成热评 -->
       <div class="card">
         <label id="label-prompt" for="t">视频要点</label>
         <textarea id="t" placeholder="例：兄妹旅游Vlog：第一次潜水拍到海龟；妹妹克服恐惧，兄长鼓励很暖。"></textarea>
@@ -90,6 +91,7 @@
         <div id="out" class="out" style="margin-top:12px"></div>
       </div>
 
+      <!-- 右侧：卖点+套餐 -->
       <div class="card">
         <h3 id="feat-title" style="margin-top:0">为什么更像“真人热评”</h3>
         <div class="features">
@@ -121,8 +123,44 @@
           </div>
         </div>
       </div>
+
+      <!-- 抓链 -->
+      <div class="card">
+        <h3 style="margin-top:0">抓链 · 自动提取视频信息</h3>
+        <label for="linkText" class="muted">把短链或正文粘这里（会自动识别第一个链接）</label>
+        <textarea id="linkText" placeholder="例：这条也太好笑了 https://v.douyin.com/xxxxxx/ 快去看！"></textarea>
+        <div class="row" style="margin:10px 0">
+          <button class="btn" id="btnGrab">抓取信息</button>
+        </div>
+        <div id="grabOut" class="out" style="min-height:40px"></div>
+        <div id="grabThumbWrap" style="margin-top:10px;display:none">
+          <img id="grabThumb" alt="cover" style="max-width:100%;border-radius:12px;border:1px solid #26304a">
+        </div>
+      </div>
+
+      <!-- 生图 -->
+      <div class="card">
+        <h3 style="margin-top:0">AI 生图 · 生成封面/配图</h3>
+        <label for="imgPrompt" class="muted">描述你想要的画面（会用到视频要点和热评也更好）</label>
+        <textarea id="imgPrompt" placeholder="例：蓝紫霓虹赛博风，“热评君AI”字样的竖版封面，适合短视频缩略图"></textarea>
+        <div class="row" style="margin:10px 0">
+          <div>
+            <label for="imgSize" class="muted">尺寸</label>
+            <select id="imgSize">
+              <option>512x512</option>
+              <option>768x768</option>
+              <option>1024x1024</option>
+            </select>
+          </div>
+          <button class="btn" id="btnImg">生成图片</button>
+        </div>
+        <div id="imgOutWrap" style="display:none;margin-top:10px">
+          <img id="imgOut" alt="image" style="max-width:100%;border-radius:12px;border:1px solid #26304a">
+        </div>
+      </div>
     </section>
 
+    <!-- API 简介 -->
     <section class="card api section">
       <h3 id="api-title" style="margin-top:0">API（预留，对接更方便）</h3>
       <p class="muted" id="api-tip">后端已部署在 Render，同域即可直接调用：</p>
@@ -218,7 +256,7 @@
       applyLang($('lang').value);
       $('lang').onchange = () => applyLang($('lang').value);
 
-      // 生成
+      // 生成热评
       $('btn').onclick = async () => {
         $('btn').disabled = true; $('out').textContent = '生成中…';
         try{
@@ -230,8 +268,51 @@
           $('out').textContent = j.comment || (j.error ? ('[错误] '+j.error) : JSON.stringify(j,null,2));
         }catch(e){
           $('out').textContent = '[网络错误] ' + e.message;
+        }finally{ $('btn').disabled = false; }
+      };
+
+      // 抓链
+      $('btnGrab').onclick = async () => {
+        $('grabOut').textContent = '抓取中…';
+        $('grabThumbWrap').style.display = 'none';
+        try{
+          const r = await fetch('/api/extract-link', {
+            method:'POST', headers:{'content-type':'application/json'},
+            body: JSON.stringify({ text: $('linkText').value || '' })
+          });
+          const j = await r.json();
+          if (!r.ok) throw new Error(j.error || '抓链失败');
+          $('grabOut').textContent =
+            `来源：${j.site}\n标题：${j.title || '-'}\n简介：${j.description || '-'}\n链接：${j.finalUrl}`;
+          if (j.image) { $('grabThumb').src = j.image; $('grabThumbWrap').style.display = ''; }
+          // 自动带入“视频要点”
+          if (!$('t').value && j.title) $('t').value = `${j.title}｜${j.description || ''}`;
+        }catch(e){
+          $('grabOut').textContent = '[错误] ' + e.message;
+        }
+      };
+
+      // 生图
+      $('btnImg').onclick = async () => {
+        const base = $('imgPrompt').value || '';
+        const withContext = base || $('t').value || '';
+        if (!withContext) { alert('请先填写描述或“视频要点”。'); return; }
+        $('btnImg').disabled = true;
+        $('imgOutWrap').style.display = 'none'; $('imgOut').src = '';
+        try{
+          const r = await fetch('/api/gen-image', {
+            method:'POST', headers:{'content-type':'application/json'},
+            body: JSON.stringify({ prompt: withContext, size: $('imgSize').value })
+          });
+          const j = await r.json();
+          if (!r.ok) throw new Error(j.error || '生图失败');
+          const dataUrl = j.dataUrl || (j.placeholder && j.dataUrl);
+          if (!dataUrl) throw new Error('未拿到图片数据');
+          $('imgOut').src = dataUrl; $('imgOutWrap').style.display = '';
+        }catch(e){
+          alert('[生图错误] ' + e.message);
         }finally{
-          $('btn').disabled = false;
+          $('btnImg').disabled = false;
         }
       };
     });
