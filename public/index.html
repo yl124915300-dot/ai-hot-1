@@ -1,0 +1,79 @@
+<!doctype html>
+<html lang="zh-CN">
+<head>
+  <meta charset="utf-8" />
+  <meta name="viewport" content="width=device-width, initial-scale=1" />
+  <title>AI短视频热评 · HotComments</title>
+  <meta name="description" content="一键生成短视频平台的走心热评与高互动评论，适配抖音/快手/小红书等平台。" />
+  <meta property="og:title" content="AI短视频热评 · HotComments" />
+  <meta property="og:description" content="一键生成短视频平台的走心热评与高互动评论。" />
+  <meta property="og:type" content="website" />
+  <meta property="og:image" content="/logo.svg" />
+  <link rel="icon" href="/favicon.svg" />
+  <style>
+    :root { --bg:#0b0f19; --card:#111726; --txt:#e7ecff; --sub:#9fb0ff; --btn:#5b74ff; }
+    * { box-sizing:border-box; }
+    body { margin:0; background:linear-gradient(180deg,#0b0f19 0%,#0f1630 100%); color:var(--txt); font-family: ui-sans-serif,system-ui,Segoe UI,PingFang SC; }
+    .wrap { max-width:880px; margin:40px auto; padding:0 16px; }
+    header { display:flex; align-items:center; gap:12px; margin-bottom:20px; }
+    header img { width:40px; height:40px; }
+    h1 { font-size:28px; margin:0; }
+    .card { background:var(--card); border:1px solid rgba(255,255,255,.08); border-radius:16px; padding:16px; box-shadow: 0 8px 30px rgba(0,0,0,.25); }
+    label { display:block; margin:12px 0 6px; color:var(--sub); }
+    textarea { width:100%; min-height:140px; resize:vertical; border-radius:12px; padding:12px; border:1px solid rgba(255,255,255,.12); background:#0c1224; color:var(--txt); }
+    .row { display:flex; gap:12px; flex-wrap:wrap; }
+    select,input[type=number] { padding:8px 10px; border-radius:10px; border:1px solid rgba(255,255,255,.12); background:#0c1224; color:var(--txt); }
+    button { background:var(--btn); color:white; border:none; padding:10px 16px; border-radius:12px; cursor:pointer; font-weight:600; }
+    button:disabled { opacity:.6; cursor:not-allowed; }
+    .out { white-space:pre-wrap; background:#0c1224; padding:12px; border-radius:12px; border:1px solid rgba(255,255,255,.12); min-height:60px; }
+    footer { margin:24px 0; font-size:13px; color:#b9c3ff88; }
+    a { color:#b9c3ff; }
+  </style>
+</head>
+<body>
+  <div class="wrap">
+    <header>
+      <img src="/logo.svg" alt="logo" />
+      <h1>AI短视频热评 · HotComments</h1>
+    </header>
+
+    <div class="card">
+      <label for="t">视频要点</label>
+      <textarea id="t" placeholder="例：兄妹旅游Vlog：第一次出海潜水，水下拍到海龟；妹妹怕水但最后成功挑战，兄长鼓励全程很暖。"></textarea>
+      <div class="row" style="margin:12px 0;">
+        <div>
+          <label for="tone">语气</label>
+          <select id="tone">
+            <option>轻松有梗</option>
+            <option>走心共鸣</option>
+            <option>犀利吐槽</option>
+            <option>温柔鼓励</option>
+          </select>
+        </div>
+        <div>
+          <label for="len">长度(字)</label>
+          <input id="len" type="number" value="40" min="10" max="80" />
+        </div>
+      </div>
+      <button id="btn">生成热评</button>
+      <div id="out" class="out" style="margin-top:12px;"></div>
+    </div>
+
+    <footer>© <span id="y"></span> HotComments · <a href="mailto:support@example.com">support@example.com</a> · <a href="/healthz" target="_blank">健康检查</a></footer>
+  </div>
+
+  <script>
+    y.textContent = new Date().getFullYear();
+    btn.onclick = async () => {
+      btn.disabled = true; out.textContent = '生成中…';
+      const r = await fetch('/api/generate-hot-comment', {
+        method: 'POST', headers: { 'content-type':'application/json' },
+        body: JSON.stringify({ prompt: t.value, tone: tone.value, length: Number(len.value) })
+      });
+      const j = await r.json();
+      out.textContent = j.comment || (j.error ? ('[错误] '+j.error) : JSON.stringify(j,null,2));
+      btn.disabled = false;
+    };
+  </script>
+</body>
+</html>
