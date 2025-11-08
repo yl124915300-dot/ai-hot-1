@@ -1,4 +1,4 @@
-// src/server.js —— 热评君·运营版后端（匹配 /api/generate /api/image /api/grab /api/quota /api/redeem）
+// src/server.js —— 热评君AI（运营后端整合版）
 import express from 'express';
 import cors from 'cors';
 import morgan from 'morgan';
@@ -25,17 +25,14 @@ const IMG_MODEL = process.env.OPENAI_IMAGE_MODEL || 'gpt-image-1';
 const apiKey = process.env.OPENAI_API_KEY;
 const openai = apiKey ? new OpenAI({ apiKey }) : null;
 
-// 简易配额（按 IP/天，内存版，适合演示/小流量）
+// 简易配额：内存版（按 IP/天）
 const FREE = { comments: 20, images: 5 };
 const PRO  = { comments: 200, images: 50 };
 const usage = new Map();   // key: day#ip -> {plan, cmt, img}
 const proSet = new Set();  // day#ip 标记 PRO
 const REDEEM_CODE = process.env.REDEEM_CODE || 'PRO-2025';
 
-// 获取 day key 与真实 IP
-function dayKey() {
-  return new Date().toISOString().slice(0,10); // YYYY-MM-DD
-}
+function dayKey() { return new Date().toISOString().slice(0,10); }
 function getIP(req) {
   const xf = req.headers['x-forwarded-for'];
   if (typeof xf === 'string' && xf.length) return xf.split(',')[0].trim();
@@ -43,25 +40,20 @@ function getIP(req) {
 }
 function getUsage(req) {
   const key = `${dayKey()}#${getIP(req)}`;
-  if (!usage.has(key)) {
-    usage.set(key, { plan: 'free', cmt: 0, img: 0 });
-  }
-  // 如果兑换过 PRO，保持
+  if (!usage.has(key)) usage.set(key, { plan: 'free', cmt: 0, img: 0 });
   if (proSet.has(key)) usage.get(key).plan = 'pro';
   return { key, data: usage.get(key) };
 }
 function getLimit(plan) { return plan === 'pro' ? PRO : FREE; }
 
-// ---- 静态与健康检查 ----
+// ---- 健康检查 & 静态 ----
 app.get('/healthz', (_req, res) => {
   res.json({ ok: true, model: MODEL, imageModel: IMG_MODEL, time: new Date().toISOString() });
 });
 app.use(express.static(path.join(__dirname, '../public')));
-app.get('/', (_req, res) => {
-  res.sendFile(path.join(__dirname, '../public/index.html'));
-});
+app.get('/', (_req, res) => res.sendFile(path.join(__dirname, '../public/index.html')));
 
-// ---- /api/quota 配额查询 ----
+// ---- 配额 ----
 app.get('/api/quota', (req, res) => {
   const { data } = getUsage(req);
   const limit = getLimit(data.plan);
@@ -74,7 +66,7 @@ app.get('/api/quota', (req, res) => {
   });
 });
 
-// ---- /api/redeem 兑换升级 ----
+// ---- 兑换升级 ----
 app.post('/api/redeem', (req, res) => {
   const code = String(req.body?.code || '').trim();
   const { key, data } = getUsage(req);
@@ -85,13 +77,11 @@ app.post('/api/redeem', (req, res) => {
   res.json({ ok: true, plan: 'pro' });
 });
 
-// ---- /api/generate 生成热评 ----
+// ---- 生成热评 ----
 app.post('/api/generate', async (req, res) => {
   const { data } = getUsage(req);
   const limit = getLimit(data.plan);
-  if (data.cmt >= limit.comments) {
-    return res.status(402).json({ error: '评论配额已用完' });
-  }
+  if (data.cmt >= limit.comments) return res.status(402).json({ error: '评论配额已用完' });
 
   const {
     platform = 'douyin',
@@ -107,7 +97,7 @@ app.post('/api/generate', async (req, res) => {
     return res.status(400).json({ error: '请提供 topic（视频主题关键词）' });
   }
 
-  // 无 key：返回本地示例，便于前端联调
+  // 无 key：返回示例便于联调
   if (!openai) {
     data.cmt++;
     const demo = Array.from({ length: Number(count) || 3 }).map((_, i) =>
@@ -120,9 +110,7 @@ app.post('/api/generate', async (req, res) => {
                  : length === '长文' ? '每句 30-50 字'
                  : '每句 18-28 字';
 
-  const sys =
-    '你是短视频热评写手，写出像真实用户的口语化评论。拒绝营销话术、拒绝表情符号堆砌；不涉敏感与引战；内容要贴合视频主题与语气要求。只给纯文本，每行一条。';
-
+  const sys = '你是短视频热评写手，写出像真实用户的口语化评论。拒绝营销话术、拒绝表情符号堆砌；不涉敏感与引战；内容要贴合视频主题与语气要求。只给纯文本，每行一条。';
   const user =
 `平台：${platform}
 语言：${lang}
@@ -142,32 +130,28 @@ app.post('/api/generate', async (req, res) => {
       ],
       temperature: 0.7
     });
-
     const text = resp?.choices?.[0]?.message?.content?.trim() || '';
     const lines = text.split(/\r?\n/).map(s => s.replace(/^\d+[\.\)\-]\s*/, '').trim()).filter(Boolean);
     data.cmt++;
-    return res.json({ data: lines.length ? lines : [text] });
+    res.json({ data: lines.length ? lines : [text] });
   } catch (e) {
-    return res.status(503).json({ error: String(e?.message || e) });
+    res.status(503).json({ error: String(e?.message || e) });
   }
 });
 
-// ---- /api/image 生成图片（Base64 dataURL 返回）----
+// ---- AI 生图 ----
 app.post('/api/image', async (req, res) => {
   const { data } = getUsage(req);
   const limit = getLimit(data.plan);
-  if (data.img >= limit.images) {
-    return res.status(402).json({ error: '图片配额已用完' });
-  }
+  if (data.img >= limit.images) return res.status(402).json({ error: '图片配额已用完' });
 
-  const { prompt = '', negative = '', size = '768x1024', quality = 'high' } = req.body || {};
+  const { prompt = '', negative = '', size = '1024x1024', quality = 'high' } = req.body || {};
   if (!prompt) return res.status(400).json({ error: 'prompt 必填' });
 
-  // 无 key：返回占位图
   if (!openai) {
     data.img++;
     const svg =
-      `<svg xmlns="http://www.w3.org/2000/svg" width="768" height="1024">
+      `<svg xmlns="http://www.w3.org/2000/svg" width="1024" height="1024">
         <rect width="100%" height="100%" fill="#0f1630"/>
         <text x="50%" y="50%" fill="#a7b5ff" font-size="28" text-anchor="middle" dominant-baseline="middle">
           占位图 · ${prompt.slice(0,18)}
@@ -194,21 +178,21 @@ app.post('/api/image', async (req, res) => {
   }
 });
 
-// ---- /api/grab 抓链（解析短链并取 og: 元信息）----
+// ---- 抓链（含抖音去水印直链尝试）----
 app.post('/api/grab', async (req, res) => {
   try {
-    const url = String(req.body?.url || '').trim();
-    if (!/^https?:\/\//i.test(url)) return res.status(400).json({ error: 'url 无效' });
+    const raw = String(req.body?.url || '').trim();
+    if (!/^https?:\/\//i.test(raw)) return res.status(400).json({ error: 'url 无效' });
+    const m0 = raw.match(/https?:\/\/[^\s]+/i);
+    const url = m0 ? m0[0] : raw;
 
-    const ua = 'Mozilla/5.0 (iPhone; CPU iPhone OS 16_0 like Mac OS X) AppleWebKit/605.1.15 (KHTML, like Gecko) Version/16.0 Mobile/15E148 Safari/604.1';
+    const ua =
+      'Mozilla/5.0 (iPhone; CPU iPhone OS 16_0 like Mac OS X) AppleWebKit/605.1.15 (KHTML, like Gecko) Version/16.0 Mobile/15E148 Safari/604.1';
     const r = await fetch(url, { redirect: 'follow', headers: { 'User-Agent': ua } });
     const finalUrl = r.url;
     const html = await r.text();
 
-    const pick = (re) => {
-      const m = html.match(re);
-      return m ? m[1].trim() : '';
-    };
+    const pick = (re) => { const m = html.match(re); return m ? m[1].trim() : ''; };
     const meta = {
       title:
         pick(/<meta[^>]+property=["']og:title["'][^>]+content=["']([^"']+)["']/i) ||
@@ -216,13 +200,10 @@ app.post('/api/grab', async (req, res) => {
       description:
         pick(/<meta[^>]+property=["']og:description["'][^>]+content=["']([^"']+)["']/i) ||
         pick(/<meta[^>]+name=["']description["'][^>]+content=["']([^"']+)["']/i),
-      image:
-        pick(/<meta[^>]+property=["']og:image["'][^>]+content=["']([^"']+)["']/i),
-      site:
-        pick(/<meta[^>]+property=["']og:site_name["'][^>]+content=["']([^"']+)["']/i)
+      image: pick(/<meta[^>]+property=["']og:image["'][^>]+content=["']([^"']+)["']/i),
+      site:  pick(/<meta[^>]+property=["']og:site_name["'][^>]+content=["']([^"']+)["']/i)
     };
 
-    // 推断平台 & 清洗主题
     const host = new URL(finalUrl).hostname.toLowerCase();
     let platform = 'unknown';
     if (host.includes('douyin')) platform = 'douyin';
@@ -238,6 +219,36 @@ app.post('/api/grab', async (req, res) => {
         .replace(/[|｜·•\-—_]+/g, ' ')
         .trim();
 
+    // 抖音去水印直链（best-effort）
+    let nowm = '';
+    if (platform === 'douyin') {
+      const tryMatch = (...res) => {
+        for (const re of res) {
+          const m = html.match(re);
+          if (m && m[1]) return m[1];
+        }
+        return '';
+      };
+      let playAddr = tryMatch(
+        /"playAddr"\s*:\s*"([^"]+\.mp4[^"]*)"/i,
+        /playAddr:\s*"([^"]+\.mp4[^"]*)"/i,
+        /"src"\s*:\s*"([^"]+\.mp4[^"]*)"/i
+      );
+      let playwm = tryMatch(
+        /"playwm"\s*:\s*"([^"]+\.mp4[^"]*)"/i,
+        /playwm:\s*"([^"]+\.mp4[^"]*)"/i
+      );
+      if (!playAddr) {
+        const urlsBlock = tryMatch(/"urls"\s*:\s*\[([^\]]+)\]/i);
+        if (urlsBlock) {
+          const firstUrl = (urlsBlock.match(/https?:\/\/[^"',\]]+\.mp4[^"',\]]*/i) || [])[0];
+          if (firstUrl) playAddr = firstUrl;
+        }
+      }
+      if (!playAddr && playwm) playAddr = playwm.replace('playwm', 'play');
+      if (playAddr) nowm = playAddr;
+    }
+
     res.json({
       ok: true,
       url,
@@ -246,7 +257,8 @@ app.post('/api/grab', async (req, res) => {
       title: meta.title || '',
       description: meta.description || '',
       image: meta.image || '',
-      cleanTopic
+      cleanTopic,
+      nowm
     });
   } catch (e) {
     res.status(503).json({ error: String(e?.message || e) });
