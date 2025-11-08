@@ -13,8 +13,7 @@
   <style>
     :root{--bg1:#0b0f19;--bg2:#0f1630;--card:#121a32;--line:#223;--txt:#eaf0ff;--sub:#a7b5ff;--btn:#5b74ff;--btn2:#7c91ff;--ok:#36d399;--err:#ff6b6b}
     *{box-sizing:border-box}
-    body{margin:0;background:linear-gradient(180deg,var(--bg1),var(--bg2));color:var(--txt);
-      font-family:ui-sans-serif,system-ui,Segoe UI,PingFang SC;-webkit-font-smoothing:antialiased}
+    body{margin:0;background:linear-gradient(180deg,var(--bg1),var(--bg2));color:var(--txt);font-family:ui-sans-serif,system-ui,Segoe UI,PingFang SC;-webkit-font-smoothing:antialiased}
     .wrap{max-width:1100px;margin:32px auto;padding:0 18px}
     header{display:flex;align-items:center;justify-content:space-between;margin-bottom:12px}
     .brand{display:flex;align-items:center;gap:10px}
@@ -24,8 +23,7 @@
     h1{font-size:32px;margin:10px 0}
     .lead{color:#c8d2ff99;margin-top:-6px}
 
-    .notice{display:flex;gap:10px;flex-wrap:wrap;align-items:center;background:#0c1224;border:1px solid #26304a;
-      padding:10px 12px;border-radius:12px;margin-top:14px}
+    .notice{display:flex;gap:10px;flex-wrap:wrap;align-items:center;background:#0c1224;border:1px solid #26304a;padding:10px 12px;border-radius:12px;margin-top:14px}
     .pill{background:#0d1b3a;border:1px solid #26304a;border-radius:999px;padding:6px 10px;font-size:12px}
     .bar{flex:1;height:10px;background:#0d1430;border-radius:999px;overflow:hidden;border:1px solid #26304a}
     .bar>span{display:block;height:100%;background:linear-gradient(90deg,#5b74ff,#7c91ff);width:0%}
@@ -34,7 +32,7 @@
     .card{background:var(--card);border:1px solid var(--line);border-radius:16px;padding:18px;box-shadow:0 12px 36px rgba(0,0,0,.25)}
     label{display:block;margin:10px 0 6px;color:var(--sub)}
     textarea{width:100%;min-height:140px;border-radius:12px;padding:12px;background:#0c1224;border:1px solid #26304a;color:var(--txt);resize:vertical}
-    .row{display:flex;gap:12px;flex-wrap:wrap}
+    .row{display:flex;gap:12px;flex-wrap:wrap;align-items:center}
     select,input[type=number],input[type=text]{padding:8px 10px;border-radius:10px;border:1px solid #26304a;background:#0c1224;color:var(--txt)}
     .btn{background:var(--btn);color:#fff;border:none;padding:11px 16px;border-radius:12px;font-weight:700;cursor:pointer}
     .btn.secondary{background:#0d1b3a;border:1px solid #31406b}
@@ -46,13 +44,11 @@
     .features{display:grid;grid-template-columns:repeat(2,1fr);gap:10px;margin-top:8px}
     .tick{color:var(--ok);margin-right:6px}
     .section{margin-top:18px}
-    .pricing{display:grid;grid-template-columns:repeat(3,1fr);gap:12px}
-    .plan{background:#0c1224;border:1px dashed #2a3557;border-radius:14px;padding:14px}
-    .plan h4{margin:4px 0 8px}
     .api pre{background:#0c1224;border:1px solid #26304a;padding:12px;border-radius:12px;overflow:auto}
     footer{margin:28px 0;color:#b8c4ff88;font-size:13px}
     a{color:#b9c3ff}
-    @media(max-width:980px){.grid{grid-template-columns:1fr}.pricing{grid-template-columns:1fr}}
+    @media(max-width:980px){.grid{grid-template-columns:1fr}}
+    input[readonly]{opacity:.9}
   </style>
 </head>
 <body>
@@ -91,7 +87,7 @@
       <!-- 抓链 -->
       <div class="card">
         <h3 style="margin-top:0">抓链 · 自动提取视频信息</h3>
-        <label for="grabUrl" class="muted">把短链或正文中的链接粘贴到这里（会自动识别第一个链接）</label>
+        <label for="grabUrl" class="muted">把短链或正文中的链接粘贴到这里（自动识别第一个链接）</label>
         <textarea id="grabUrl" placeholder="例：这条也太好笑了 https://v.douyin.com/xxxxxx/ 快去看！"></textarea>
         <div class="row" style="margin:10px 0">
           <button class="btn" id="btnGrab">抓取信息</button>
@@ -100,6 +96,16 @@
         <div id="grabOut" class="out" style="min-height:40px"></div>
         <div id="grabThumbWrap" style="margin-top:10px;display:none">
           <img id="grabThumb" alt="cover" style="max-width:100%;border-radius:12px;border:1px solid #26304a">
+        </div>
+
+        <!-- 直链区块 -->
+        <div id="nowmWrap" style="display:none;margin-top:10px">
+          <div class="row">
+            <input id="nowmUrl" readonly style="flex:1;min-width:260px" />
+            <button class="btn secondary" id="btnCopyNowm">复制直链</button>
+            <a class="btn" id="btnDownloadNowm" href="#" target="_blank" rel="noopener">打开/下载</a>
+          </div>
+          <p class="muted" style="margin-top:6px">提示：直链为系统最佳匹配；若失效，说明平台策略更新，可改用第三方下载工具。</p>
         </div>
       </div>
 
@@ -158,7 +164,7 @@
         </div>
       </div>
 
-      <!-- 右侧卖点 + 套餐 -->
+      <!-- 卖点 + 邮箱咨询按钮 -->
       <div class="card">
         <h3 id="feat-title" style="margin-top:0">为什么更像“真人热评”</h3>
         <div class="features">
@@ -168,32 +174,21 @@
           <div><span class="tick">✔</span><span id="feat4">API 接入，便于系统化批量生成</span></div>
         </div>
 
-        <div class="section">
-          <h4 id="pricing-title">套餐（占位，可后续接入支付）</h4>
-          <div class="pricing">
-            <div class="plan">
-              <h4 id="p1t">个人体验</h4>
-              <div class="muted" id="p1d">每天有限次，适合日常剪辑与发布</div>
-            </div>
-            <div class="plan">
-              <h4 id="p2t">创作者PRO</h4>
-              <div class="muted" id="p2d">高频生成 + 模板库 + 批量导出</div>
-            </div>
-            <div class="plan">
-              <h4 id="p3t">团队/企业</h4>
-              <div class="muted" id="p3d">定制规则引擎 + 域名接入 + API</div>
-            </div>
-          </div>
-          <div style="margin-top:10px" class="muted" id="cta">
-            商务合作/批量生成/定制方案，请联系：
-            <a href="mailto:yl124915300@gmail.com">yl124915300@gmail.com</a>
-          </div>
+        <div class="section" style="text-align:center">
+          <h4 style="margin:10px 0 14px" id="consult-title">需要正式版 / 团队接入 / API 批量？</h4>
+          <a class="btn" href="mailto:yl124915300@gmail.com" id="consult-btn"
+             style="display:inline-block;padding:12px 20px;border-radius:12px">
+             邮件咨询：yl124915300@gmail.com
+          </a>
+          <p class="muted" style="margin-top:10px" id="consult-note">
+            说明您的业务场景、日调用量级与平台（抖音/快手/小红书…），我们将为您开通更高限额与稳定方案。
+          </p>
         </div>
       </div>
     </section>
 
     <!-- API 简介 -->
-    <section class="card api section">
+    <section class="card section">
       <h3 id="api-title" style="margin-top:0">API（预留，对接更方便）</h3>
       <p class="muted" id="api-tip">后端已部署在 Render，同域即可直接调用：</p>
       <pre><code id="curl">curl -X POST https://YOUR-RENDER.onrender.com/api/generate \
@@ -210,38 +205,30 @@
   </div>
 
   <script>
-    // 工具
     const $ = (id)=>document.getElementById(id);
     const setText = (id, v)=>{ const el=$(id); if(el) el.textContent=v; };
     $('y').textContent = new Date().getFullYear();
 
-    // 多语言
+    // 多语言（简化）
     const i18n = {
       zh:{heroTitle:'AI短视频热评', heroSub:'一键生成更像“真人热评”的一句话，高共鸣，可直接复制粘贴。',
           featTitle:'为什么更像“真人热评”', feat1:'语气模板+场景提示，避免口号味', feat2:'一句话即用，少修饰词，利于上热门',
           feat3:'多语种支持：中文 / 英文 / 乌兹别克语', feat4:'API 接入，便于系统化批量生成',
-          pricingTitle:'套餐（占位，可后续接入支付）', p1t:'个人体验', p1d:'每天有限次，适合日常剪辑与发布',
-          p2t:'创作者PRO', p2d:'高频生成 + 模板库 + 批量导出', p3t:'团队/企业', p3d:'定制规则引擎 + 域名接入 + API',
           apiTitle:'API（预留，对接更方便）', apiTip:'后端已部署在 Render，同域即可直接调用：', apiNote:'返回示例：{"data":["…"]}'},
       en:{heroTitle:'AI Hot Comments', heroSub:'One-click human-like one-liners that spark engagement.',
           featTitle:'Why it feels human', feat1:'Tone patterns & scene hints', feat2:'Paste-ready one sentence',
           feat3:'Multilingual: Chinese / English / Uzbek', feat4:'API for bulk generation',
-          pricingTitle:'Plans (placeholder)', p1t:'Personal', p1d:'Daily limited quota',
-          p2t:'Creator PRO', p2d:'Higher limits + templates', p3t:'Team/Enterprise', p3d:'Rules engine + domain + API',
           apiTitle:'API (ready)', apiTip:'Backend on Render. Call same-origin endpoint:', apiNote:'Response: {"data":["…"]}'},
       uz:{heroTitle:'Qisqa video uchun AI izoh', heroSub:'Bir bosishda tabiiy, odamga o‘xshash bitta jumla.',
           featTitle:'Nega “inson”dek eshitiladi', feat1:'Ohang shablonlari va sahna ko‘rsatmalari', feat2:'Bitta jumla, darhol ishlatish mumkin',
           feat3:'Ko‘p til: Xitoycha / Inglizcha / O‘zbekcha', feat4:'API bilan ommaviy generatsiya',
-          pricingTitle:'Tariflar (namuna)', p1t:'Shaxsiy', p1d:'Kunlik cheklangan limit', p2t:'Creator PRO', p2d:'Yuqori limit + shablonlar',
-          p3t:'Jamoa/Korxona', p3d:'Qoidalar dvigateli + domen + API',
           apiTitle:'API (tayyor)', apiTip:'Render backend — shu domen orqali chaqiring:', apiNote:'Javob: {"data":["…"]}'}
     };
     function applyLang(L){
       const t=i18n[L]||i18n.zh;
       document.title=`热评君AI | ${t.heroTitle}`; setText('hero-title',t.heroTitle); setText('hero-sub',t.heroSub);
       setText('feat-title',t.featTitle); setText('feat1',t.feat1); setText('feat2',t.feat2); setText('feat3',t.feat3); setText('feat4',t.feat4);
-      setText('pricing-title',t.pricingTitle); setText('p1t',t.p1t); setText('p1d',t.p1d); setText('p2t',t.p2t); setText('p2d',t.p2d);
-      setText('p3t',t.p3t); setText('p3d',t.p3d); setText('api-title',t.apiTitle); setText('api-tip',t.apiTip); setText('api-note',t.apiNote);
+      setText('api-title',t.apiTitle); setText('api-tip',t.apiTip); setText('api-note',t.apiNote);
     }
     const langSel=document.getElementById('lang');
     langSel.value=(navigator.language||'zh').toLowerCase().startsWith('zh')?'zh':(navigator.language||'').toLowerCase().startsWith('uz')?'uz':'en';
@@ -256,7 +243,7 @@
         $('barC').style.width = (c.total?Math.min(100,Math.round(c.used/c.total*100)):0)+'%';
         $('barI').style.width = (i.total?Math.min(100,Math.round(i.used/i.total*100)):0)+'%';
         setText('barCtxt', `${c.used}/${c.total} 评论`); setText('barItxt', `${i.used}/${i.total} 图片`);
-      }catch(e){/* 忽略 */}
+      }catch(e){}
     }
     refreshQuota();
 
@@ -269,18 +256,27 @@
     // 抓链
     $('btnGrab').onclick=async()=>{
       $('grabOut').textContent='抓取中…'; $('grabThumbWrap').style.display='none';
+      $('nowmWrap').style.display='none'; $('nowmUrl').value='';
       try{
-        // 从整段中提取第一个 URL；若用户只贴正文也能识别
         const raw=$('grabUrl').value||''; const m=String(raw).match(/https?:\/\/[^\s]+/i);
         if(!m) throw new Error('未检测到链接');
         const r=await fetch('/api/grab',{method:'POST',headers:{'content-type':'application/json'},body:JSON.stringify({url:m[0]})});
         const j=await r.json(); if(!r.ok) throw new Error(j.error||'抓链失败');
+
         $('grabOut').textContent=`平台：${j.platform}\n标题：${j.title||'-'}\n简介：${j.description||'-'}\n链接：${j.finalUrl}`;
         if(j.image){ $('grabThumb').src=j.image; $('grabThumbWrap').style.display=''; }
         if(!$('topic').value && (j.cleanTopic||j.title)) $('topic').value = j.cleanTopic || j.title;
-      }catch(e){ $('grabOut').innerHTML='<span class="err">[错误] '+e.message+'</span>'; }
+
+        if (j.nowm) {
+          $('nowmUrl').value = j.nowm;
+          $('btnDownloadNowm').href = j.nowm;
+          $('nowmWrap').style.display='';
+        }
+      }catch(e){
+        $('grabOut').innerHTML='<span class="err">[错误] '+e.message+'</span>';
+      }
     };
-    $('btnGrabClear').onclick=()=>{ $('grabUrl').value=''; $('grabOut').textContent=''; $('grabThumbWrap').style.display='none'; };
+    $('btnGrabClear').onclick=()=>{ $('grabUrl').value=''; $('grabOut').textContent=''; $('grabThumbWrap').style.display='none'; $('nowmWrap').style.display='none'; };
 
     // 生成热评
     $('btnGen').onclick=async()=>{
@@ -307,10 +303,17 @@
         const r=await fetch('/api/image',{method:'POST',headers:{'content-type':'application/json'},
           body:JSON.stringify({prompt:base,size:$('imgSize').value})});
         const j=await r.json(); if(!r.ok) throw new Error(j.error||'生图失败');
-        const dataUrl=j.dataUrl||j.data||j.placeholder&&j.dataUrl; if(!dataUrl) throw new Error('未拿到图片数据');
+        const dataUrl=j.dataUrl||j.data; if(!dataUrl) throw new Error('未拿到图片数据');
         $('imgOut').src=dataUrl; $('imgOutWrap').style.display='';
       }catch(e){ alert('[生图错误] '+e.message); }
       finally{ $('btnImg').disabled=false; }
+    };
+
+    // 复制直链
+    $('btnCopyNowm').onclick = async () => {
+      const v = $('nowmUrl').value; if (!v) return;
+      try { await navigator.clipboard.writeText(v); $('btnCopyNowm').textContent = '已复制'; setTimeout(()=> $('btnCopyNowm').textContent='复制直链', 1200); }
+      catch { $('nowmUrl').select(); document.execCommand('copy'); }
     };
   </script>
 </body>
