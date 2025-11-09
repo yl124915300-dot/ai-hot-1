@@ -1,271 +1,329 @@
-// src/server.js —— 热评君AI（运营后端整合版）
+// src/server.js  — AI短视频热评 后端（整合增强版）
+// 功能点：
+// - /api/grab  多平台抓链（抖音/快手/小红书/TikTok/哔哩）+ 小红书二次抓取补救
+// - /api/comments  热评生成（有 Key 用 OpenAI；没 Key 回 Demo 示例）
+// - /api/image     生图生成（有 Key 用 OpenAI；没 Key 返回占位图）
+// - /healthz       健康检查
+// - helmet + compression + 静态缓存（HTML no-cache，其他长缓存）
+//
+// 需要的环境变量：OPENAI_API_KEY（如未配置，将进入 Demo 模式）
+// 可选：OPENAI_MODEL（默认 gpt-4o-mini），IMAGE_MODEL（默认 gpt-image-1）
+// 运行：Render/Docker/本地 Node18+ 均可
+
 import express from 'express';
 import cors from 'cors';
-import morgan from 'morgan';
-import dotenv from 'dotenv';
 import path from 'path';
 import { fileURLToPath } from 'url';
+import dotenv from 'dotenv';
+import compression from 'compression';
+import helmet from 'helmet';
 import { OpenAI } from 'openai';
 
 dotenv.config();
 
-// __dirname for ESM
 const __filename = fileURLToPath(import.meta.url);
 const __dirname = path.dirname(__filename);
 
 const app = express();
+
+// —— 安全与压缩 —— //
+app.use(helmet({
+  contentSecurityPolicy: false,          // 便于前端内联样式，后续可细化
+  crossOriginResourcePolicy: { policy: 'cross-origin' }
+}));
+app.use(compression());
+
+// —— 基础中间件 —— //
 app.use(cors());
-app.use(express.json({ limit: '4mb' }));
-app.use(morgan('tiny'));
+app.use(express.json({ limit: '1mb' }));
 
-// ---- 配置 ----
-const PORT = process.env.PORT || 8080;
-const MODEL = process.env.OPENAI_MODEL || 'gpt-4o-mini';
-const IMG_MODEL = process.env.OPENAI_IMAGE_MODEL || 'gpt-image-1';
-const apiKey = process.env.OPENAI_API_KEY;
-const openai = apiKey ? new OpenAI({ apiKey }) : null;
-
-// 简易配额：内存版（按 IP/天）
-const FREE = { comments: 20, images: 5 };
-const PRO  = { comments: 200, images: 50 };
-const usage = new Map();   // key: day#ip -> {plan, cmt, img}
-const proSet = new Set();  // day#ip 标记 PRO
-const REDEEM_CODE = process.env.REDEEM_CODE || 'PRO-2025';
-
-function dayKey() { return new Date().toISOString().slice(0,10); }
-function getIP(req) {
-  const xf = req.headers['x-forwarded-for'];
-  if (typeof xf === 'string' && xf.length) return xf.split(',')[0].trim();
-  return req.ip || req.connection?.remoteAddress || 'unknown';
-}
-function getUsage(req) {
-  const key = `${dayKey()}#${getIP(req)}`;
-  if (!usage.has(key)) usage.set(key, { plan: 'free', cmt: 0, img: 0 });
-  if (proSet.has(key)) usage.get(key).plan = 'pro';
-  return { key, data: usage.get(key) };
-}
-function getLimit(plan) { return plan === 'pro' ? PRO : FREE; }
-
-// ---- 健康检查 & 静态 ----
-app.get('/healthz', (_req, res) => {
-  res.json({ ok: true, model: MODEL, imageModel: IMG_MODEL, time: new Date().toISOString() });
-});
-app.use(express.static(path.join(__dirname, '../public')));
-app.get('/', (_req, res) => res.sendFile(path.join(__dirname, '../public/index.html')));
-
-// ---- 配额 ----
-app.get('/api/quota', (req, res) => {
-  const { data } = getUsage(req);
-  const limit = getLimit(data.plan);
-  res.json({
-    plan: data.plan,
-    daily: {
-      comments: { used: data.cmt, total: limit.comments },
-      images:   { used: data.img, total: limit.images }
+// —— 静态资源（带缓存），HTML 不缓存 —— //
+const oneMonth = 30 * 24 * 3600 * 1000;
+app.use(express.static(path.join(__dirname, '../public'), {
+  maxAge: oneMonth,
+  setHeaders: (res, filePath) => {
+    if (filePath.endsWith('.html')) {
+      res.setHeader('Cache-Control', 'no-cache');
     }
+  }
+}));
+
+// —— OpenAI 配置 & Demo 回退 —— //
+const OPENAI_API_KEY = process.env.OPENAI_API_KEY || '';
+const OPENAI_MODEL = process.env.OPENAI_MODEL || 'gpt-4o-mini';
+const IMAGE_MODEL  = process.env.IMAGE_MODEL  || 'gpt-image-1';
+
+const hasKey = !!OPENAI_API_KEY;
+const openai = hasKey ? new OpenAI({ apiKey: OPENAI_API_KEY }) : null;
+
+// —— 工具 & 抓链相关 —— //
+const UA_MOBILE = 'Mozilla/5.0 (iPhone; CPU iPhone OS 15_0 like Mac OS X) AppleWebKit/605.1.15 (KHTML, like Gecko) Version/15.0 Mobile/15E148 Safari/604.1';
+const UA_DESKTOP = 'Mozilla/5.0 (Macintosh; Intel Mac OS X 13_5) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/124.0 Safari/537.36';
+
+function pickUrlFromText(t) {
+  if (!t) return '';
+  const m = String(t).match(/https?:\/\/[^\s<>")']+/);
+  return m ? m[0] : '';
+}
+
+async function fetchHtml(url, isMobile = true) {
+  const r = await fetch(url, {
+    redirect: 'follow',
+    headers: { 'User-Agent': isMobile ? UA_MOBILE : UA_DESKTOP, 'Referer': url }
+  });
+  const finalUrl = r.url || url;
+  const html = await r.text();
+  return { finalUrl, html };
+}
+
+function inferPlatform(host) {
+  host = (host || '').toLowerCase();
+  if (host.includes('douyin')) return 'douyin';
+  if (host.includes('kuaishou') || host.includes('gifshow')) return 'kuaishou';
+  if (host.includes('xiaohongshu')) return 'xiaohongshu';
+  if (host.includes('tiktok')) return 'tiktok';
+  if (host.includes('bilibili')) return 'bilibili';
+  return 'unknown';
+}
+
+function extractMeta(html) {
+  const g = (re) => { const m = html.match(re); return m ? m[1] : ''; };
+  // 常见 og/meta
+  const title = g(/<meta[^>]+property=["']og:title["'][^>]+content=["']([^"']+)["']/i) ||
+                g(/<meta[^>]+name=["']title["'][^>]+content=["']([^"']+)["']/i) ||
+                g(/<title[^>]*>([^<]+)<\/title>/i);
+  const image = g(/<meta[^>]+property=["']og:image["'][^>]+content=["']([^"']+)["']/i);
+  const desc  = g(/<meta[^>]+property=["']og:description["'][^>]+content=["']([^"']+)["']/i) ||
+                g(/<meta[^>]+name=["']description["'][^>]+content=["']([^"']+)["']/i);
+  return { title, image, desc };
+}
+
+function tryMatch(html, ...regs) {
+  for (const re of regs) {
+    const m = html.match(re);
+    if (m) return m[1];
+  }
+  return '';
+}
+
+// —— 小红书 noteId 与二次抓取（移动页） —— //
+function xhsNoteId(u) {
+  try {
+    const m = String(u).match(/(?:explore|item)\/([0-9a-zA-Z]+)/);
+    return m ? m[1] : '';
+  } catch { return ''; }
+}
+
+async function fetchXhsMobile(noteId) {
+  const url = `https://www.xiaohongshu.com/explore/${noteId}`;
+  const r = await fetch(url, {
+    redirect: 'follow',
+    headers: { 'User-Agent': UA_MOBILE, 'Referer': 'https://www.xiaohongshu.com' }
+  });
+  const html = await r.text();
+
+  const pick = (re) => { const m = html.match(re); return m ? m[1] : ''; };
+  const title = pick(/"title"\s*:\s*"([^"]+)"/) || pick(/"noteTitle"\s*:\s*"([^"]+)"/);
+  const image = pick(/"cover"\s*:\s*"([^"]+)"/) || pick(/"image"\s*:\s*"([^"]+)"/);
+
+  const h264 = pick(/"h264"\s*:\s*"([^"]+\.mp4[^"]*)"/i);
+  const m3u8 = pick(/"m3u8"\s*:\s*"([^"]+\.m3u8[^"]*)"/i);
+
+  return { title, image, nowm: h264 || m3u8 };
+}
+
+// —— 多平台直链抽取 —— //
+function extractNowm(platform, html) {
+  const m = (...regs) => tryMatch(html, ...regs);
+
+  if (platform === 'douyin') {
+    // 抖音：playAddr / srcUrls / m3u8 兜底
+    return m(
+      /"playAddr"\s*:\s*"([^"]+\.mp4[^"]*)"/i,
+      /"downloadAddr"\s*:\s*"([^"]+\.mp4[^"]*)"/i,
+      /srcUrls"\s*:\s*\["([^"]+\.mp4[^"]*)"/i,
+      /"m3u8_url"\s*:\s*"([^"]+\.m3u8[^"]*)"/i
+    );
+  }
+
+  if (platform === 'kuaishou') {
+    // 快手：hls/e/720p/mp4 多路兜底
+    return m(
+      /"srcNoMark"\s*:\s*"([^"]+\.mp4[^"]*)"/i,
+      /"photoH265Mp4Url"\s*:\s*"([^"]+\.mp4[^"]*)"/i,
+      /"photoMp4Url"\s*:\s*"([^"]+\.mp4[^"]*)"/i,
+      /"hlsPlayUrl"\s*:\s*"([^"]+\.m3u8[^"]*)"/i
+    );
+  }
+
+  if (platform === 'xiaohongshu') {
+    // 小红书：PC/H5 meta + 内嵌 JSON 兜底
+    let src = m(
+      /property=["']og:video["'][^>]+content=["']([^"']+\.mp4[^"']*)["']/i,
+      /"h264"\s*:\s*"([^"]+\.mp4[^"]*)"/i,
+      /"stream"\s*:\s*{[^}]*"h264"\s*:\s*"([^"]+\.mp4[^"]*)"/i
+    );
+    if (!src) {
+      const m3u8 = m(/"m3u8"\s*:\s*"([^"]+\.m3u8[^"]*)"/i);
+      if (m3u8) src = m3u8;
+    }
+    return src || '';
+  }
+
+  if (platform === 'tiktok') {
+    return m(
+      /"downloadAddr"\s*:\s*"([^"]+\.mp4[^"]*)"/i,
+      /"playAddr"\s*:\s*"([^"]+\.mp4[^"]*)"/i
+    );
+  }
+
+  if (platform === 'bilibili') {
+    return m(
+      /"baseUrl"\s*:\s*"([^"]+\.m3u8[^"]*)"/i,
+      /"url"\s*:\s*"([^"]+\.m3u8[^"]*)"/i
+    );
+  }
+
+  return '';
+}
+
+// —— 健康检查 —— //
+app.get('/healthz', (_req, res) => {
+  res.json({
+    ok: true,
+    model: OPENAI_MODEL,
+    imageModel: IMAGE_MODEL,
+    demo: !hasKey,
+    time: new Date().toISOString()
   });
 });
 
-// ---- 兑换升级 ----
-app.post('/api/redeem', (req, res) => {
-  const code = String(req.body?.code || '').trim();
-  const { key, data } = getUsage(req);
-  if (!code) return res.status(400).json({ error: '兑换码不能为空' });
-  if (code !== REDEEM_CODE) return res.status(400).json({ error: '兑换码无效' });
-  data.plan = 'pro';
-  proSet.add(key);
-  res.json({ ok: true, plan: 'pro' });
+// —— 抓链 —— //
+app.post('/api/grab', async (req, res) => {
+  try {
+    const raw = String(req.body?.text || '').trim();
+    const url = pickUrlFromText(raw);
+    if (!url) return res.json({ ok: false, error: '未检测到链接' });
+
+    const { finalUrl, html } = await fetchHtml(url, true);
+    const host = new URL(finalUrl).hostname;
+    const platform = inferPlatform(host);
+    const meta = extractMeta(html);
+
+    let nowm = extractNowm(platform, html);
+
+    // 小红书：PC 分享页经常抓不到，做移动页二次抓取补救
+    if (platform === 'xiaohongshu' && (!meta.title || !nowm)) {
+      const id = xhsNoteId(finalUrl);
+      if (id) {
+        try {
+          const x = await fetchXhsMobile(id);
+          if (x.title) meta.title = x.title;
+          if (x.image) meta.image = x.image;
+          if (!nowm && x.nowm) nowm = x.nowm;
+        } catch {}
+      }
+    }
+
+    const cleanTopic = (meta.title || '')
+      .replace(/【[^】]*】/g, '')
+      .replace(/\s+/g, ' ')
+      .trim();
+
+    res.json({
+      ok: true,
+      platform,
+      finalUrl,
+      title: meta.title || '',
+      cover: meta.image || '',
+      desc: meta.desc || '',
+      nowm: nowm || '',
+      cleanTopic
+    });
+  } catch (e) {
+    res.json({ ok: false, error: e?.message || '抓取失败' });
+  }
 });
 
-// ---- 生成热评 ----
-app.post('/api/generate', async (req, res) => {
-  const { data } = getUsage(req);
-  const limit = getLimit(data.plan);
-  if (data.cmt >= limit.comments) return res.status(402).json({ error: '评论配额已用完' });
-
-  const {
-    platform = 'douyin',
-    lang = 'zh',
-    tone = '简短金句',
-    count = 6,
-    length = '中等',
-    topic = '',
-    context = ''
-  } = req.body || {};
-
-  if (!topic || typeof topic !== 'string') {
-    return res.status(400).json({ error: '请提供 topic（视频主题关键词）' });
-  }
-
-  // 无 key：返回示例便于联调
-  if (!openai) {
-    data.cmt++;
-    const demo = Array.from({ length: Number(count) || 3 }).map((_, i) =>
-      `【示例${i+1}】${topic.slice(0,20)}｜${tone}｜${length}`
-    );
-    return res.json({ data: demo, demo: true });
-  }
-
-  const lenHint = length === '短句' ? '每句 10-18 字'
-                 : length === '长文' ? '每句 30-50 字'
-                 : '每句 18-28 字';
-
-  const sys = '你是短视频热评写手，写出像真实用户的口语化评论。拒绝营销话术、拒绝表情符号堆砌；不涉敏感与引战；内容要贴合视频主题与语气要求。只给纯文本，每行一条。';
-  const user =
-`平台：${platform}
-语言：${lang}
-口吻：${tone}
-条数：${count}
-长度建议：${lenHint}
-视频主题关键词：${topic}
-补充素材（可选）：${context || '（无）'}
-请输出 ${count} 条，逐行返回。`;
-
+// —— 热评生成 —— //
+app.post('/api/comments', async (req, res) => {
   try {
+    const {
+      topic = '',
+      material = '',
+      count = 6,
+      lang = 'zh',
+      tone = '轻松有梗'
+    } = req.body || {};
+
+    if (!hasKey) {
+      const demo = Array.from({ length: Math.max(1, Math.min(30, count)) }, (_, i) =>
+        `【示例${i + 1}】${topic || '小红书'}｜简短金句（${tone}）｜中等`);
+      return res.json({ ok: true, lines: demo, demo: true });
+    }
+
+    const sys = `你是短视频热评生成器。要求：每条独立、自然口语、可直接复制粘贴；避免AI腔；控制在18-42字（或对应英文/乌兹别克长度）；不要编号。`;
+    const user = [
+      `平台/主题：${topic || '短视频'}`,
+      `语气：${tone}；语言：${lang}`,
+      material ? `补充素材：${material}` : '',
+      `请生成 ${Math.max(1, Math.min(30, count))} 条。`
+    ].filter(Boolean).join('\n');
+
     const resp = await openai.chat.completions.create({
-      model: MODEL,
+      model: OPENAI_MODEL,
       messages: [
         { role: 'system', content: sys },
         { role: 'user', content: user }
       ],
-      temperature: 0.7
+      temperature: 0.8
     });
-    const text = resp?.choices?.[0]?.message?.content?.trim() || '';
-    const lines = text.split(/\r?\n/).map(s => s.replace(/^\d+[\.\)\-]\s*/, '').trim()).filter(Boolean);
-    data.cmt++;
-    res.json({ data: lines.length ? lines : [text] });
+
+    const text = resp.choices?.[0]?.message?.content || '';
+    const lines = text
+      .split(/\r?\n/)
+      .map(s => s.replace(/^\s*[-•\d.]+\s*/, '').trim())
+      .filter(Boolean);
+
+    res.json({ ok: true, lines });
   } catch (e) {
-    res.status(503).json({ error: String(e?.message || e) });
+    res.json({ ok: false, error: e?.message || '生成失败' });
   }
 });
 
-// ---- AI 生图 ----
+// —— 生图生成 —— //
 app.post('/api/image', async (req, res) => {
-  const { data } = getUsage(req);
-  const limit = getLimit(data.plan);
-  if (data.img >= limit.images) return res.status(402).json({ error: '图片配额已用完' });
-
-  const { prompt = '', negative = '', size = '1024x1024', quality = 'high' } = req.body || {};
-  if (!prompt) return res.status(400).json({ error: 'prompt 必填' });
-
-  if (!openai) {
-    data.img++;
-    const svg =
-      `<svg xmlns="http://www.w3.org/2000/svg" width="1024" height="1024">
-        <rect width="100%" height="100%" fill="#0f1630"/>
-        <text x="50%" y="50%" fill="#a7b5ff" font-size="28" text-anchor="middle" dominant-baseline="middle">
-          占位图 · ${prompt.slice(0,18)}
-        </text>
-      </svg>`;
-    return res.json({ dataUrl: 'data:image/svg+xml;utf8,' + encodeURIComponent(svg), demo: true });
-  }
-
-  const fullPrompt = `${prompt}${negative ? `\n\n[Avoid]: ${negative}` : ''}`;
-
   try {
-    const gen = await openai.images.generate({
-      model: IMG_MODEL,
-      prompt: fullPrompt,
-      size,
-      quality
-    });
-    const b64 = gen?.data?.[0]?.b64_json;
-    if (!b64) return res.status(503).json({ error: '生成失败' });
-    data.img++;
-    res.json({ dataUrl: `data:image/png;base64,${b64}` });
-  } catch (e) {
-    res.status(503).json({ error: String(e?.message || e) });
-  }
-});
+    const { prompt = '', size = '1024x1024' } = req.body || {};
 
-// ---- 抓链（含抖音去水印直链尝试）----
-app.post('/api/grab', async (req, res) => {
-  try {
-    const raw = String(req.body?.url || '').trim();
-    if (!/^https?:\/\//i.test(raw)) return res.status(400).json({ error: 'url 无效' });
-    const m0 = raw.match(/https?:\/\/[^\s]+/i);
-    const url = m0 ? m0[0] : raw;
-
-    const ua =
-      'Mozilla/5.0 (iPhone; CPU iPhone OS 16_0 like Mac OS X) AppleWebKit/605.1.15 (KHTML, like Gecko) Version/16.0 Mobile/15E148 Safari/604.1';
-    const r = await fetch(url, { redirect: 'follow', headers: { 'User-Agent': ua } });
-    const finalUrl = r.url;
-    const html = await r.text();
-
-    const pick = (re) => { const m = html.match(re); return m ? m[1].trim() : ''; };
-    const meta = {
-      title:
-        pick(/<meta[^>]+property=["']og:title["'][^>]+content=["']([^"']+)["']/i) ||
-        pick(/<title>([^<]+)<\/title>/i),
-      description:
-        pick(/<meta[^>]+property=["']og:description["'][^>]+content=["']([^"']+)["']/i) ||
-        pick(/<meta[^>]+name=["']description["'][^>]+content=["']([^"']+)["']/i),
-      image: pick(/<meta[^>]+property=["']og:image["'][^>]+content=["']([^"']+)["']/i),
-      site:  pick(/<meta[^>]+property=["']og:site_name["'][^>]+content=["']([^"']+)["']/i)
-    };
-
-    const host = new URL(finalUrl).hostname.toLowerCase();
-    let platform = 'unknown';
-    if (host.includes('douyin')) platform = 'douyin';
-    else if (host.includes('kuaishou')) platform = 'kuaishou';
-    else if (host.includes('xiaohongshu') || host.includes('xhs')) platform = 'xiaohongshu';
-    else if (host.includes('bilibili') || host.includes('b23')) platform = 'bilibili';
-    else if (host.includes('tiktok')) platform = 'tiktok';
-    else if (host.includes('youtube') || host.includes('youtu')) platform = 'youtube';
-
-    const cleanTopic =
-      (meta.title || '')
-        .replace(/[#@][\w\u4e00-\u9fa5\-]+/g, '')
-        .replace(/[|｜·•\-—_]+/g, ' ')
-        .trim();
-
-    // 抖音去水印直链（best-effort）
-    let nowm = '';
-    if (platform === 'douyin') {
-      const tryMatch = (...res) => {
-        for (const re of res) {
-          const m = html.match(re);
-          if (m && m[1]) return m[1];
-        }
-        return '';
-      };
-      let playAddr = tryMatch(
-        /"playAddr"\s*:\s*"([^"]+\.mp4[^"]*)"/i,
-        /playAddr:\s*"([^"]+\.mp4[^"]*)"/i,
-        /"src"\s*:\s*"([^"]+\.mp4[^"]*)"/i
-      );
-      let playwm = tryMatch(
-        /"playwm"\s*:\s*"([^"]+\.mp4[^"]*)"/i,
-        /playwm:\s*"([^"]+\.mp4[^"]*)"/i
-      );
-      if (!playAddr) {
-        const urlsBlock = tryMatch(/"urls"\s*:\s*\[([^\]]+)\]/i);
-        if (urlsBlock) {
-          const firstUrl = (urlsBlock.match(/https?:\/\/[^"',\]]+\.mp4[^"',\]]*/i) || [])[0];
-          if (firstUrl) playAddr = firstUrl;
-        }
-      }
-      if (!playAddr && playwm) playAddr = playwm.replace('playwm', 'play');
-      if (playAddr) nowm = playAddr;
+    if (!hasKey) {
+      // 占位图（前端会显示为“占位图 · 小红书”）
+      return res.json({ ok: true, demo: true, urls: [], placeholder: true });
     }
 
-    res.json({
-      ok: true,
-      url,
-      finalUrl,
-      platform,
-      title: meta.title || '',
-      description: meta.description || '',
-      image: meta.image || '',
-      cleanTopic,
-      nowm
+    const r = await openai.images.generate({
+      model: IMAGE_MODEL,
+      prompt,
+      size
     });
+
+    const urls = (r.data || [])
+      .map(it => it.url)
+      .filter(Boolean);
+
+    res.json({ ok: true, urls });
   } catch (e) {
-    res.status(503).json({ error: String(e?.message || e) });
+    res.json({ ok: false, error: e?.message || '生图失败' });
   }
 });
 
-// ---- 启动 ----
+// —— 单页应用：兜底返回 index.html —— //
+app.get('*', (_req, res) => {
+  res.sendFile(path.join(__dirname, '../public/index.html'));
+});
+
+// —— 启动 —— //
+const PORT = process.env.PORT || 8080;
 app.listen(PORT, () => {
-  console.log('HotCommenter server listening on', PORT);
+  console.log(`HotComments server running on :${PORT} (demo=${!hasKey})`);
 });
