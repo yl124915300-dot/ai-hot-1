@@ -1,18 +1,22 @@
-# 使用官方 Node 运行时
-FROM node:20-alpine
+# 使用 Node 18（自带 fetch），体积小
+FROM node:18-alpine
 
 # 工作目录
 WORKDIR /app
 
-# 拷贝依赖文件（如有 package.json 可替换下面两行）
-COPY package.json package-lock.json* ./
-RUN npm ci || npm i
+# 先拷贝依赖声明，安装依赖（利用层缓存）
+COPY package*.json ./
+RUN npm ci --omit=dev
 
-# 拷贝源码
-COPY . .
+# 再拷贝源码
+COPY public ./public
+COPY src ./src
 
-# 暴露端口
+# Render 默认注入 PORT 环境变量，这里用 8080 兜底
+ENV PORT=8080
+
+# 暴露端口（仅文档化，在 Render 不强制）
 EXPOSE 8080
 
 # 启动
-CMD ["node", "src/server.js"]
+CMD ["npm", "start"]
